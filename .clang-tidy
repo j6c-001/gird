@@ -1,0 +1,17 @@
+Checks: >
+  -*,
+  readability-identifier-naming
+
+WarningsAsErrors: ''
+
+CheckOptions:
+  # Locals + parameters: lowerCamelCase
+  - { key: readability-identifier-naming.LocalVariableCase, value: camelBack }
+  - { key: readability-identifier-naming.ParameterCase,     value: camelBack }
+
+  # Struct/class members: UpperCamelCase
+  - { key: readability-identifier-naming.ClassMemberCase,   value: CamelCase }
+  - { key: readability-identifier-naming.StructMemberCase,  value: CamelCase }
+
+  # Optional: function names (if you want them too)
+  # - { key: readability-identifier-naming.FunctionCase,      value: CamelCase }
