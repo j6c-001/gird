@@ -30,7 +30,7 @@ struct GridModel
 
     void rebuild_indices()
     {
-        indices.resize((int)rows.size());
+        indices.resize(static_cast<int>(rows.size()));
         std::iota(indices.begin(), indices.end(), 0);
     }
 
@@ -39,7 +39,7 @@ struct GridModel
         sortCol = col;
         sortAsc = asc;
 
-        if (sortCol < 0 || sortCol >= (int)cols.size())
+        if (sortCol < 0 || sortCol >= static_cast<int>(cols.size()))
             return;
 
         auto& c = cols[sortCol];

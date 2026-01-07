@@ -28,6 +28,7 @@ add_executable(gird
         src/main.cpp
         src/GridViewImGui.cpp
         src/GridFramework.cpp
+        src/GridPersistence.cpp
 )
 
 target_link_libraries(gird PRIVATE imgui)
@@ -40,7 +41,14 @@ if (GIRD_WEB)
     target_link_options(gird PRIVATE
             -sUSE_GLFW=3
             -sFULL_ES3=1
+            -sWASM=1
+            -sINITIAL_MEMORY=67108864       # 64MB initial
+            -sALLOW_MEMORY_GROWTH=1         # Dynamic growth
+            -sMAXIMUM_MEMORY=268435456      # 256MB max
+            -sASSERTIONS=0                  # Faster
     )
+
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 else()
     find_package(OpenGL REQUIRED)
     find_package(PkgConfig REQUIRED)

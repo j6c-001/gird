@@ -5,15 +5,23 @@
 #include "imgui_impl_opengl3.h"
 
 #include "GridFramework.h"
+#include "GridPersistence.h"
 #include "GridViewImGui.h"
 #include "SimpleRowSource.h"
 
+#include <memory>
 #include <stdio.h>
 #include <string>
+#include "PlatformPaths.h"
+#include "FinancialDataGen.h"
+#include "BuildFinancialColumns.h"
+
+#include <filesystem>
 
 #if defined(IMGUI_IMPL_OPENGL_ES2)
 #include <GLES2/gl2.h>
 #endif
+
 #include <GLFW/glfw3.h>
 
 #ifdef __EMSCRIPTEN__
@@ -35,73 +43,13 @@ struct AppState
     gird::GridController ctl;
 
     ImVec4 clear_color = ImVec4(0.10f, 0.10f, 0.12f, 1.00f);
+
+    std::unique_ptr<gird::IPersistence> persistence;
 };
 
 static AppState g;
 
-static void BuildDummyDocument(gird::GridDocument& doc, gird::SimpleRowSource& src)
-{
-    using namespace gird;
 
-    src.rows.clear();
-    src.rows.reserve(10000);
-    for (int i = 0; i < 10000; ++i)
-    {
-        src.rows.push_back({
-            "ROW-" + std::to_string(i),
-            "Item " + std::to_string(i % 100),
-            std::to_string(100000 - i)
-        });
-    }
-
-    doc.source = &src;
-
-    auto get_i64 = [](int64_t x){ return gird::Value(x); };
-
-    doc.columns.insert(doc.columns.begin(), {
-        gird::ColumnDef{
-            .id="year", .label="Year", .type=gird::ValueType::Int64, .visible=true,
-            .getValue = [](const gird::SimpleRow& r){
-                int i = std::stoi(r[0].substr(4));        // from "ROW-123"
-                int64_t year = 2024 + (i % 4);
-                return gird::Value(year);
-            },
-            .format = [](const gird::Value& v){ return std::to_string(std::get<int64_t>(v)); },
-        },
-        gird::ColumnDef{
-            .id="quarter", .label="Q", .type=gird::ValueType::Int64, .visible=true,
-            .getValue = [](const gird::SimpleRow& r){
-                int i = std::stoi(r[0].substr(4));
-                int64_t q = 1 + (i % 4);
-                return gird::Value(q);
-            },
-            .format = [](const gird::Value& v){ return "Q" + std::to_string(std::get<int64_t>(v)); },
-        },
-        gird::ColumnDef{
-            .id="month", .label="Month", .type=gird::ValueType::Int64, .visible=true,
-            .getValue = [](const gird::SimpleRow& r){
-                int i = std::stoi(r[0].substr(4));
-                int64_t m = 1 + (i % 12);
-                return gird::Value(m);
-            },
-            .format = [](const gird::Value& v){ return std::to_string(std::get<int64_t>(v)); },
-        },
-        gird::ColumnDef{
-            .id="week", .label="Week", .type=gird::ValueType::Int64, .visible=true,
-            .getValue = [](const gird::SimpleRow& r){
-                int i = std::stoi(r[0].substr(4));
-                int64_t w = 1 + (i % 52);
-                return gird::Value(w);
-            },
-            .format = [](const gird::Value& v){ return std::to_string(std::get<int64_t>(v)); },
-        },
-    });
-
-
-    // Framework: mark derived data dirty so first frame builds indices
-    // (implementation lives in GridController::rebuild_indices()).
-    // Keeping behavior identical: no sort/filter/group yet.
-}
 
 static void Frame()
 {
@@ -138,7 +86,7 @@ static void Frame()
         g.ctl.RebuildIndices();
 
     // Draw grid to fill remaining content region
-    gird::DrawGridImGui(g.doc, g.vm, g.ctl, ImGui::GetContentRegionAvail());
+    gird::DrawGridImGui(g.doc, g.vm, g.ctl, {ImGui::GetWindowWidth() - 10 , ImGui::GetWindowHeight() - 40});
 
     ImGui::End();
 
@@ -184,7 +132,7 @@ int main(int, char**)
 #endif
 
     float main_scale = ImGui_ImplGlfw_GetContentScaleForMonitor(glfwGetPrimaryMonitor());
-    g.window = glfwCreateWindow((int)(1280 * main_scale), (int)(800 * main_scale), "gird", nullptr, nullptr);
+    g.window = glfwCreateWindow(static_cast<int>(1280 * main_scale), static_cast<int>(800 * main_scale), "gird", nullptr, nullptr);
     if (g.window == nullptr)
         return 1;
 
@@ -211,12 +159,31 @@ int main(int, char**)
 #endif
     ImGui_ImplOpenGL3_Init(glsl_version);
 
-    // Build framework document + dummy rows
-    BuildDummyDocument(g.doc, g.src);
-    g.vm.groupByColumnIds = {"year", "month"};
+    // Generate financial data
+    std::vector<gird::SimpleRow> finData = gird::FinancialDataGenerator::GenerateRows();
+
+    g.src.rows = std::move(finData);
+    g.doc.source = &g.src;
+
+
+    // Build document columns
+    BuildFinancialColumns(g.doc);
+
+    g.vm.groupByColumnIds = {};
     g.vm.dirtyGroups = true;
     g.vm.dirtyIndices = true;
     g.vm.dirtyGroups  = true;
+
+#ifdef __EMSCRIPTEN__
+    g.persistence = std::make_unique<gird::JsonPersistence>();
+#else
+    g.persistence = std::make_unique<gird::JsonPersistence>(gird::GetConfigDir());
+    std::filesystem::create_directories(gird::GetConfigDir());
+#endif
+
+    g.vm.persistenceKey = "main_grid";
+    // NEW: Give controller access to persistence
+    g.ctl.persistence = g.persistence.get();
 
 #ifdef __EMSCRIPTEN__
     // Typically disable ini on web; persistence can be added later.

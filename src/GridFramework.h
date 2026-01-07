@@ -10,6 +10,7 @@ struct ImFont; // forward decl (keeps this header mostly UI-agnostic)
 
 namespace gird
 {
+class IPersistence;
 
 // ---- Value / typing ----
 enum class ValueType
@@ -22,9 +23,20 @@ enum class ValueType
 
 using Value = std::variant<std::string, int64_t, double, bool>;
 
-// ---- Row access ----
-// Start simple: a row is vector<string>. Later: opaque handle or struct-of-arrays.
-using SimpleRow = std::vector<std::string>;
+using SimpleRow = std::vector<Value>;
+
+inline std::string ValueToString(const Value& v) {
+    if (std::holds_alternative<std::string>(v)) {
+        return std::get<std::string>(v);
+    } else if (std::holds_alternative<int64_t>(v)) {
+        return std::to_string(std::get<int64_t>(v));
+    } else if (std::holds_alternative<double>(v)) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.2f", std::get<double>(v));
+        return std::string(buf);
+    }
+    return "";
+}
 
 struct IRowSource
 {
@@ -55,6 +67,7 @@ struct ColumnDef
     // For now you can just parse from row strings.
     std::function<Value(const SimpleRow &)> getValue;
 
+    std::function<std::string(const SimpleRow &)> getGroupKey;
     // Formatting: value -> display string
     std::function<std::string(const Value &)> format;
 
@@ -221,10 +234,12 @@ struct GridViewModel
     bool showGroupHeaders = true;
     bool showGrandTotal = false;
 
-    // Dirty flags
+    // Dirty flags, so dirty!
     bool dirtyIndices = true;
     bool dirtyGroups = true;
     bool dirtyViewColumns = true;
+
+    std::string persistenceKey = "";
 };
 
 // ---- Controller: applies configs -> view model ----
@@ -233,20 +248,22 @@ struct GridController
     GridDocument *doc = nullptr; // not owning
     GridViewModel *vm = nullptr; // not owning
 
+    IPersistence *persistence = nullptr;
+
     // Selection (start simple)
     int selected_view_row = -1;
 
     // Helpers
-    const ColumnDef *FindCol1(const std::string &id) const;
-    int FindColumn(const GridDocument &doc, const std::string &id) const;
-    int ColumnIndexByUserId(int user_id) const;
-    [[nodiscard]] std::string GetGroupKey(const GridDocument &doc, int col_idx,
-                                            const SimpleRow &row) const;
+   [[nodiscard]] const ColumnDef *FindCol(const std::string &id) const;
+    [[nodiscard]] static int FindColumn(const GridDocument &doc, const std::string &id);
+    [[nodiscard]] int ColumnIndexByUserId(int userId) const;
+    [[nodiscard]] static std::string GetGroupKey(const GridDocument &doc, int colIdx,
+                                            const SimpleRow &row);
     std::vector<std::string> ComputeSummaries(int begin, int end) const;
     // Pipeline steps (we’ll implement next)
-    void RebuildIndices(); // filter + sort -> vm.indices
+    void RebuildIndices() const; // filter + sort -> vm.indices
     void RebuildGroups();  // group -> vm.groups
-    void RebuildViewColumns();
+    void RebuildViewColumns() const;
     void BuildGroupLevel(int level, int begin, int end, int indent);
 };
 

@@ -1,10 +1,31 @@
 #include "GridViewImGui.h"
 #include "GridFramework.h"
+#include "GridPersistence.h"
 
 #include <imgui.h>
 
 namespace gird
 {
+
+
+struct PresetUIState
+{
+
+    static const int PRESET_NAME_BUFFER_SIZE = 256;
+
+    char savePresetNameBuffer[PRESET_NAME_BUFFER_SIZE] = "";
+    std::string currentLoadPresetName = "";  // For combo display on
+
+    std::string loadPresetName = "";
+    std::vector<std::string> availablePresets;
+    bool presetsNeedRefresh = true;
+    bool showSaveSuccess = false;
+    bool showLoadSuccess = false;
+    int saveSuccessFrames = 0;
+    int loadSuccessFrames = 0;
+};
+
+static PresetUIState g_presetUI;
 
 static std::string default_format(const Value &v)
 {
@@ -45,7 +66,160 @@ static std::string AggKey(const gird::AggDef &a)
     return "agg:" + std::string(AggTypeName(a.type)) + ":" + a.column_id;
 }
 
-static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewModel &vm)
+
+bool DrawPresetsUI(const GridDocument &doc, GridViewModel &vm, IPersistence *persistence)
+{
+    if (!persistence || vm.persistenceKey.empty())
+    {
+        ImGui::TextUnformatted("(Persistence not configured)");
+        return false;
+    }
+
+    bool changed = false;
+
+    // Refresh preset list periodically
+    if (g_presetUI.presetsNeedRefresh)
+    {
+        g_presetUI.availablePresets = persistence->ListPresets(vm.persistenceKey);
+        g_presetUI.presetsNeedRefresh = false;
+    }
+
+    // ---- SAVE SECTION ----
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Save Current State As:");
+
+    ImGui::InputText(
+        "##presetSaveName",
+        g_presetUI.savePresetNameBuffer,
+        256
+    );
+
+    ImGui::SameLine();
+
+    if (ImGui::Button("Save Preset##btn") && g_presetUI.savePresetNameBuffer[0] != '\0')
+    {
+        // Validate preset name (no special chars)
+        std::string cleanName = g_presetUI.savePresetNameBuffer;
+        cleanName.erase(std::remove_if(cleanName.begin(), cleanName.end(),
+            [](char c) { return c == '/' || c == '\\' || c == '"' || c == ':'; }),
+            cleanName.end());
+
+        if (!cleanName.empty())
+        {
+            auto state = ExtractGridState(doc, vm);
+            std::string presetKey = vm.persistenceKey + "_" + cleanName;
+
+            if (persistence->Save(presetKey, state))
+            {
+                g_presetUI.showSaveSuccess = true;
+                g_presetUI.saveSuccessFrames = 120;  // Show for 2 seconds at 60 FPS
+                g_presetUI.presetsNeedRefresh = true;
+                g_presetUI.savePresetNameBuffer[0] = '\0';
+                changed = true;
+            }
+        }
+    }
+
+    // Show save success message
+    if (g_presetUI.showSaveSuccess)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "✓ Saved!");
+
+        g_presetUI.saveSuccessFrames--;
+        if (g_presetUI.saveSuccessFrames <= 0)
+            g_presetUI.showSaveSuccess = false;
+    }
+
+    // ---- LOAD SECTION ----
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Load Preset:");
+
+    const char* loadPreview = g_presetUI.loadPresetName.empty()
+        ? "Select a preset..."
+        : g_presetUI.loadPresetName.c_str();
+
+    if (ImGui::BeginCombo("##presetSelect", loadPreview, ImGuiComboFlags_HeightLarge))
+    {
+        if (g_presetUI.availablePresets.empty())
+        {
+            ImGui::TextDisabled("(No saved presets)");
+        }
+        else
+        {
+            for (const auto& presetName : g_presetUI.availablePresets)
+            {
+                bool isSelected = (g_presetUI.loadPresetName == presetName);
+
+                if (ImGui::Selectable(presetName.c_str(), isSelected))
+                {
+                    g_presetUI.loadPresetName = presetName;
+                }
+
+                if (isSelected)
+                    ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    // Load button
+    ImGui::SameLine();
+    if (ImGui::Button("Load##btn") && !g_presetUI.loadPresetName.empty())
+    {
+        std::string presetKey = vm.persistenceKey + "_" + g_presetUI.loadPresetName;
+        GridState state;
+
+        if (persistence->Load(presetKey, state))
+        {
+            ApplyGridState(state, const_cast<GridDocument&>(doc), vm);
+            g_presetUI.showLoadSuccess = true;
+            g_presetUI.loadSuccessFrames = 120;
+            changed = true;
+        }
+    }
+
+    // Show load success message
+    if (g_presetUI.showLoadSuccess)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "✓ Loaded!");
+
+        g_presetUI.loadSuccessFrames--;
+        if (g_presetUI.loadSuccessFrames <= 0)
+            g_presetUI.showLoadSuccess = false;
+    }
+
+    // Delete button
+    ImGui::SameLine();
+    if (ImGui::Button("Delete##btn") && !g_presetUI.loadPresetName.empty())
+    {
+        std::string presetKey = vm.persistenceKey + "_" + g_presetUI.loadPresetName;
+        persistence->Clear(presetKey);
+        g_presetUI.presetsNeedRefresh = true;
+        g_presetUI.loadPresetName = "";
+        changed = true;
+    }
+
+    // Show saved presets list
+    if (!g_presetUI.availablePresets.empty())
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextUnformatted("Available Presets:");
+
+        for (const auto& presetName : g_presetUI.availablePresets)
+        {
+            ImGui::BulletText("%s", presetName.c_str());
+        }
+    }
+
+    return changed;
+}
+
+static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewModel &vm, gird::IPersistence *persistence)
 {
     bool changed = false;
 
@@ -71,7 +245,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
     // Collect groupable column indices once
     std::vector<int> groupable;
     groupable.reserve(doc.columns.size());
-    for (int c = 0; c < (int)doc.columns.size(); ++c)
+    for (int c = 0; c < static_cast<int>(doc.columns.size()); ++c)
         if (doc.columns[c].groupable)
             groupable.push_back(c);
 
@@ -99,7 +273,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
         ImGui::Separator();
 
         // Remove invalid ids (e.g. column deleted)
-        for (int i = 0; i < (int)vm.groupByColumnIds.size();)
+        for (int i = 0; i < static_cast<int>(vm.groupByColumnIds.size());)
         {
             if (!id_is_valid(vm.groupByColumnIds[i]))
             {
@@ -113,7 +287,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
         }
 
         // Existing levels list
-        for (int i = 0; i < (int)vm.groupByColumnIds.size(); ++i)
+        for (int i = 0; i < static_cast<int>(vm.groupByColumnIds.size()); ++i)
         {
             ImGui::PushID(i);
 
@@ -129,7 +303,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
             ImGui::SameLine();
             if (ImGui::ArrowButton("##down", ImGuiDir_Down))
             {
-                if (i + 1 < (int)vm.groupByColumnIds.size())
+                if (i + 1 < static_cast<int>(vm.groupByColumnIds.size()))
                 {
                     std::swap(vm.groupByColumnIds[i], vm.groupByColumnIds[i + 1]);
                     changed = true;
@@ -142,7 +316,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
             const char *preview = label_for_id(vm.groupByColumnIds[i]);
             if (ImGui::BeginCombo("##col", preview))
             {
-                for (int gi = 0; gi < (int)groupable.size(); ++gi)
+                for (int gi = 0; gi < static_cast<int>(groupable.size()); ++gi)
                 {
                     const int c = groupable[gi];
                     const bool selected = (doc.columns[c].id == vm.groupByColumnIds[i]);
@@ -180,7 +354,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
 
         if (ImGui::BeginCombo("Add level", "Select column..."))
         {
-            for (int gi = 0; gi < (int)groupable.size(); ++gi)
+            for (int gi = 0; gi < static_cast<int>(groupable.size()); ++gi)
             {
                 const int c = groupable[gi];
                 const std::string &id = doc.columns[c].id;
@@ -209,7 +383,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
     ImGui::TextUnformatted("Aggregate columns:");
     ImGui::Separator();
 
-    for (int i = 0; i < (int)vm.active_aggs.size(); ++i)
+    for (int i = 0; i < static_cast<int>(vm.active_aggs.size()); ++i)
     {
         ImGui::PushID(i);
         auto &a = vm.active_aggs[i];
@@ -226,7 +400,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
         ImGui::SameLine();
         if (ImGui::ArrowButton("##dnAgg", ImGuiDir_Down))
         {
-            if (i + 1 < (int)vm.active_aggs.size())
+            if (i + 1 < static_cast<int>(vm.active_aggs.size()))
             {
                 std::swap(vm.active_aggs[i], vm.active_aggs[i + 1]);
                 changed = true;
@@ -246,7 +420,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
 
         if (ImGui::BeginCombo("##aggCol", preview_col))
         {
-            for (int c = 0; c < (int)doc.columns.size(); ++c)
+            for (int c = 0; c < static_cast<int>(doc.columns.size()); ++c)
             {
                 const auto &col = doc.columns[c];
                 // optional: skip group-by columns if you want
@@ -266,9 +440,9 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
         const char *preview_agg = AggTypeName(a.type);
         if (ImGui::BeginCombo("##aggFn", preview_agg))
         {
-            for (int t = (int)gird::AggType::Count; t <= (int)gird::AggType::Custom; ++t)
+            for (int t = static_cast<int>(gird::AggType::Count); t <= static_cast<int>(gird::AggType::Custom); ++t)
             {
-                auto at = (gird::AggType)t;
+                auto at = static_cast<gird::AggType>(t);
                 bool sel = (a.type == at);
                 if (ImGui::Selectable(AggTypeName(at), sel))
                 {
@@ -302,7 +476,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
     ImGui::TextUnformatted("Toggle visibility; agg cols can be reordered/deleted.");
     ImGui::Separator();
 
-    for (int i = 0; i < (int)vm.viewColumns.size(); ++i)
+    for (int i = 0; i < static_cast<int>(vm.viewColumns.size()); ++i)
     {
         ImGui::PushID(i);
         const auto &vc = vm.viewColumns[i];
@@ -336,7 +510,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
         {
             // find agg index in vm.active_aggs (match by column_id + type)
             int agg_idx = -1;
-            for (int k = 0; k < (int)vm.active_aggs.size(); ++k)
+            for (int k = 0; k < static_cast<int>(vm.active_aggs.size()); ++k)
             {
                 if (vm.active_aggs[k].column_id == vc.agg.column_id &&
                     vm.active_aggs[k].type == vc.agg.type)
@@ -360,7 +534,7 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
                 ImGui::SameLine();
                 if (ImGui::ArrowButton("##dnAggCol", ImGuiDir_Down))
                 {
-                    if (agg_idx + 1 < (int)vm.active_aggs.size())
+                    if (agg_idx + 1 < static_cast<int>(vm.active_aggs.size()))
                     {
                         std::swap(vm.active_aggs[agg_idx], vm.active_aggs[agg_idx + 1]);
                         changed = true;
@@ -380,6 +554,17 @@ static bool DrawGroupingConfig(const gird::GridDocument &doc, gird::GridViewMode
         ImGui::PopID();
     }
 
+    if (ImGui::CollapsingHeader("Presets"))
+    {
+        if (DrawPresetsUI(doc, vm, persistence))
+        {
+            vm.dirtyViewColumns = true;
+            vm.dirtyIndices = true;
+            vm.dirtyGroups = true;
+            vm.dirtyRenderRows = true;
+        }
+    }
+
     return changed;
 }
 
@@ -389,12 +574,15 @@ void DrawGridImGui(GridDocument &doc, GridViewModel &vm, GridController &ctl, Im
     ctl.vm = &vm;
 
     if (!doc.source)
+    {
         return;
+    }
+
 
     ImGui::SetNextItemOpen(false, ImGuiCond_Once); // default collapsed [web:545]
     if (ImGui::CollapsingHeader("Grid config", ImGuiTreeNodeFlags_DefaultOpen == 0))
     {
-        if (DrawGroupingConfig(doc, vm))
+        if (DrawGroupingConfig(doc, vm, ctl.persistence))
         {
             vm.dirtyViewColumns = true;
             vm.dirtyIndices = true;
@@ -406,6 +594,7 @@ void DrawGridImGui(GridDocument &doc, GridViewModel &vm, GridController &ctl, Im
 
     ImGui::Separator();
 
+
     // ----- Build view column projection -----
     if (vm.dirtyViewColumns)
     {
@@ -413,37 +602,49 @@ void DrawGridImGui(GridDocument &doc, GridViewModel &vm, GridController &ctl, Im
         vm.dirtyGroups = true;     // summaries must realign to view cols
         vm.dirtyRenderRows = true;
     }
+    const int colCount = static_cast<int>(vm.viewColumns.size());
+    if (colCount <= 0)
+    {
+        return;
+    }
 
+
+    // Count visible columns first
+    int visibleCount = std::count_if(vm.viewColumns.begin(), vm.viewColumns.end(),
+        [](const ViewColumn &vc) { return vc.visible; });
+
+    if (visibleCount == 0)
+    {
+        ImGui::Text("(No columns visible - toggle column visibility to display data)");
+        return;
+    }
     // ----- Sorting / indices -----
     if (vm.dirtyIndices)
+    {
         ctl.RebuildIndices();
+    }
 
     ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable |
                             ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable |
                             ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
                             ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollX |
-                            ImGuiTableFlags_ScrollY | ImGuiTableFlags_SortMulti;
+                            ImGuiTableFlags_ScrollY | ImGuiTableFlags_SortMulti | ImGuiTableFlags_SizingFixedFit;;
 
-    const int col_count = (int)vm.viewColumns.size();
-    if (col_count <= 0)
-        return;
 
-    if (ImGui::BeginTable("##gird_table", col_count, flags, size))
+    if (ImGui::BeginTable("##gird_table", colCount, flags, size))
     {
         // ----- Table columns from vm.view_columns -----
-        for (int vc = 0; vc < col_count; ++vc)
+        for (int vc = 0; vc < colCount; ++vc)
         {
             const auto &vcol = vm.viewColumns[vc];
 
             const char *label = "";
-            ImGuiTableColumnFlags cflags = ImGuiTableColumnFlags_None;
-
+            ImGuiTableColumnFlags cflags = ImGuiTableColumnFlags_WidthFixed;;
             if (vcol.kind == ViewColumn::Kind::Doc)
             {
                 const auto &col = doc.columns[vcol.docColIndex];
                 label = col.label.c_str();
-                if (!col.visible)
-                    cflags |= ImGuiTableColumnFlags_DefaultHide;
+
                 if (!col.sortable)
                     cflags |= ImGuiTableColumnFlags_NoSort;
             }
@@ -451,30 +652,31 @@ void DrawGridImGui(GridDocument &doc, GridViewModel &vm, GridController &ctl, Im
             {
                 // virtual aggregate column
                 label = vcol.label.c_str();
+
                 cflags |= ImGuiTableColumnFlags_NoSort; // start simple
             }
 
-            // ColumnUserID == view column index (NOT doc index)
-            ImGui::TableSetupColumn(label, cflags, 0.0f, (ImGuiID)vc);
+            ImGui::TableSetColumnEnabled(vc, vcol.visible);
+            ImGui::TableSetupColumn(label, cflags, 100.0f, static_cast<ImGuiID>(vc));
         }
 
         ImGui::TableHeadersRow();
 
         // ----- Read ImGui sort specs -> vm.active_sort_keys -----
-        if (ImGuiTableSortSpecs *sort_specs = ImGui::TableGetSortSpecs())
+        if (ImGuiTableSortSpecs *sortSpecs = ImGui::TableGetSortSpecs())
         {
-            if (sort_specs->SpecsDirty)
+            if (sortSpecs->SpecsDirty)
             {
                 vm.activeSortKeys.clear();
 
-                for (int i = 0; i < sort_specs->SpecsCount; ++i)
+                for (int i = 0; i < sortSpecs->SpecsCount; ++i)
                 {
-                    const ImGuiTableColumnSortSpecs &s = sort_specs->Specs[i];
-                    const int view_col_index = (int)s.ColumnUserID;
-                    if (view_col_index < 0 || view_col_index >= col_count)
+                    const ImGuiTableColumnSortSpecs &s = sortSpecs->Specs[i];
+                    const int viewColIndex = static_cast<int>(s.ColumnUserID);
+                    if (viewColIndex < 0 || viewColIndex >= colCount)
                         continue;
 
-                    const auto &vcol = vm.viewColumns[view_col_index];
+                    const auto &vcol = vm.viewColumns[viewColIndex];
 
                     // Only doc columns participate in sorting (for now)
                     if (vcol.kind != ViewColumn::Kind::Doc)
@@ -492,7 +694,7 @@ void DrawGridImGui(GridDocument &doc, GridViewModel &vm, GridController &ctl, Im
                 }
 
                 vm.dirtyIndices = true;
-                sort_specs->SpecsDirty = false;
+                sortSpecs->SpecsDirty = false;
             }
         }
 
@@ -512,7 +714,7 @@ void DrawGridImGui(GridDocument &doc, GridViewModel &vm, GridController &ctl, Im
 
         // ----- Draw rows from vm.render_rows -----
         ImGuiListClipper clipper;
-        clipper.Begin((int)vm.renderRows.size());
+        clipper.Begin(static_cast<int>(vm.renderRows.size()));
 
         while (clipper.Step())
         {
@@ -523,26 +725,26 @@ void DrawGridImGui(GridDocument &doc, GridViewModel &vm, GridController &ctl, Im
 
                 if (r.kind == RenderRowKind::GroupHeader)
                 {
-                    if (r.groupNodeIndex < 0 || r.groupNodeIndex >= (int)vm.groupNodes.size())
+                    if (r.groupNodeIndex < 0 || r.groupNodeIndex >= static_cast<int>(vm.groupNodes.size()))
                         continue;
 
                     const GroupNode &g = vm.groupNodes[r.groupNodeIndex];
 
                     ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(45, 45, 70, 255));
 
-                    for (int vc = 0; vc < col_count; ++vc)
+                    for (int vc = 0; vc < colCount; ++vc)
                     {
                         ImGui::TableSetColumnIndex(vc);
 
                         if (vc == 0)
                         {
-                            ImGui::Indent((float)g.indent * 16.0f);
+                            ImGui::Indent(static_cast<float>(g.indent) * 16.0f);
                             ImGui::TextUnformatted(g.label.c_str());
-                            ImGui::Unindent((float)g.indent * 16.0f);
+                            ImGui::Unindent(static_cast<float>(g.indent) * 16.0f);
                         }
                         else
                         {
-                            if (vc < (int)g.summaryByCol.size() && !g.summaryByCol[vc].empty())
+                            if (vc < static_cast<int>(g.summaryByCol.size()) && !g.summaryByCol[vc].empty())
                                 ImGui::TextUnformatted(g.summaryByCol[vc].c_str());
                         }
                     }
@@ -552,12 +754,12 @@ void DrawGridImGui(GridDocument &doc, GridViewModel &vm, GridController &ctl, Im
                     const int src_row_idx = r.srcRrowIndex;
                     const auto &row = doc.source->RowAt(src_row_idx);
 
-                    for (int vc = 0; vc < col_count; ++vc)
+                    for (int vc = 0; vc < colCount; ++vc)
                     {
                         ImGui::TableSetColumnIndex(vc);
 
                         if (vc == 0)
-                            ImGui::Indent((float)r.indent * 16.0f);
+                            ImGui::Indent(static_cast<float>(r.indent) * 16.0f);
 
                         const auto &vcol = vm.viewColumns[vc];
 
@@ -575,7 +777,7 @@ void DrawGridImGui(GridDocument &doc, GridViewModel &vm, GridController &ctl, Im
                         }
 
                         if (vc == 0)
-                            ImGui::Unindent((float)r.indent * 16.0f);
+                            ImGui::Unindent(static_cast<float>(r.indent) * 16.0f);
                     }
                 }
             }
@@ -584,5 +786,7 @@ void DrawGridImGui(GridDocument &doc, GridViewModel &vm, GridController &ctl, Im
         ImGui::EndTable();
     }
 }
+
+
 
 } // namespace gird

@@ -7,7 +7,7 @@ namespace gird {
         {
             std::vector<SimpleRow> rows;
 
-            int RowCount() const override { return (int)rows.size(); }
+            int RowCount() const override { return static_cast<int>(rows.size()); }
             const SimpleRow& RowAt(int row_index) const override { return rows[row_index]; }
         };
 
